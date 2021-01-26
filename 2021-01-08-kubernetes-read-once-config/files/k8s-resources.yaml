@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-secret
+spec:
+  containers:
+  - name: app
+
+    # The image we built
+    image: xeor/k8s-read-once-example
+
+    volumeMounts:
+    # Mount shared with the initContainer which will get
+    # our temporary secret from it
+    - mountPath: "/etc/init-secrets"
+      name: init-secrets
+
+    # Persistant mount containing the encrypted and
+    # temporary decrypted file
+    - name: config
+      mountPath: /config
+
+  initContainers:
+  # Container responsible for copying our secret from the
+  # read-only-mounted Secret to a location that our app can
+  # read, but also delete it.
+  # There is nothing special here, just a cp from one volume
+  # (mounted from a Secret) to a mount that is later shared
+  # with our main app.
+  - name: base-secret-injector
+    image: alpine
+    args:
+    - "/bin/sh"
+    - "-c"
+    - "cp /etc/init-secrets-ro/* /etc/init-secrets/"
+    volumeMounts:
+    # This is the shared mount-point
+    - mountPath: "/etc/init-secrets"
+      name: init-secrets
+    
+    # This is the mount-point from the the Secret resource
+    - mountPath: "/etc/init-secrets-ro"
+      name : init-secrets-ro
+
+  volumes:
+  # Since this is just a temporary volume, we will keep it
+  # in memory and start it empty.
+  - name: init-secrets
+    emptyDir:
+      medium: Memory
+
+  # Only mounted on the init-container
+  - name: init-secrets-ro
+    secret:
+      secretName: 'encryption-key'
+
+  # This is where you keep your encrypted config. The decrypted
+  # config will also be placed here. In this example, we store it on
+  # the host, which works great for a simple minikube example.
+  - name: config
+    hostPath:
+      path: /tmp/read-once-config-temp
+      type: DirectoryOrCreate
+
+---
+
+# The passphrase used for encrypting/decrypting the config.
+# secretfile_pw will be the filename and it will be mounted
+# on /etc/init-secrets-ro/ in the init-container
+apiVersion: v1
+kind: Secret
+metadata:
+  name: 'encryption-key'
+type: Opaque
+stringData:
+  secretfile_pw: "the-secret-key"
