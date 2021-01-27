@@ -16,4 +16,5 @@ jobs:
         uses: xeor/repository-dispatch@v1
         with:
           token: ${{ secrets.BOANU_REPO_TOKEN }}
+          repository: xeor/boa-nu
           event-type: build
