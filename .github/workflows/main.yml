@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Repository Dispatch
+        uses: xeor/repository-dispatch@v1
+        with:
+          token: ${{ secrets.BOANU_REPO_TOKEN }}
+          event-type: build
