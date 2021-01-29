@@ -1,6 +1,6 @@
 ---
 title: Kubernetes pod - read-once config
-date: 2021-01-08
+date: 2021-01-29
 summary: Make sure the pod can only read a configuration only one time
 tags: ['kubernetes', 'security']
 githubFiles: true
