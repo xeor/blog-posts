@@ -1,0 +1,144 @@
+#!/bin/sh
+
+# Crash script if a command fails or unbound variables
+set -eu
+
+gpg="gpg2"
+
+# Make sure we only have 1 encrypted file. If not, we must make it
+encfileid="$(ls bcktxt.*.enc 2> /dev/null | cut -d . -f 2)"
+encfileid_count="$(echo $encfileid | wc -w | tr -d ' ')"
+if [[ ${encfileid_count} == 1 ]]; then
+  echo "encrypted file id is ${encfileid}"
+elif [[ "${encfileid_count}" == 0 ]]; then
+  echo "found no encrypted file, what should the unique id be?"
+  read encfileid
+else
+  echo "You have multiple files named bcktxt.*.enc, there can only be one"
+  exit 1
+fi
+
+encrypted_filename="bcktxt.${encfileid}.enc"
+
+# Store unique-id and datestamp unencrypted so we can search and find
+# our ciphertext easier, and know when it was created
+comment="${encfileid} $(date +%Y-%m-%d)"
+
+kernel="$(uname -s)"
+
+function decrypt {
+  # Make sure our filename gets the bermission 600 (-rw-------)
+  umask 0177
+
+  # Even tho we do a lot of stuff when encrypting. Decrypting is just --decrypt
+  ${gpg} --no-symkey-cache --output ${decrypted_filepath} --decrypt ${encrypted_filename}
+}
+
+function encrypt {
+  ${gpg} --output ${encrypted_filename} --symmetric \
+    --s2k-mode 3 --s2k-count 65011712 --s2k-digest-algo SHA512 \
+    --cipher-algo AES256 --no-symkey-cache --armor --comment "${comment}" \
+    ${decrypted_filepath}
+}
+
+function osx_create_ramdisk {
+  SIZE_MB=2
+  SECTORS=$((2048 * ${SIZE_MB}))
+
+  volume="/Volumes/${osx_ramdisk_name}"
+
+  if [ -d ${volume} ]; then
+    echo "Ramdisk volume already exists (${volume}), inspect manually"
+    exit 1
+  fi
+
+  echo "Making new ramdisk device"
+  # xargs removes trailing whitespaces
+  DISK_ID=$(hdiutil attach -nobrowse -nomount ram://${SECTORS} | xargs)
+
+  echo "Making filesystem on it (${DISK_ID})"
+  diskutil erasevolume HFS+ "${osx_ramdisk_name}" "${DISK_ID}"
+  chmod 0700 "/Volumes/${osx_ramdisk_name}"
+}
+
+function osx_delete_ramdisk {
+  if [[ -z "${DISK_ID}" ]]; then
+    echo "DISK_ID is not set, unable to delete ramdisk, inspect manually"
+    return 1
+  fi
+
+  volume="/Volumes/${osx_ramdisk_name}"
+  detected_device_node=$(diskutil info ${volume} | awk '/Device Node:/ { print $3 }')
+
+  if [[ "${DISK_ID}" != "${detected_device_node}" ]]; then
+    echo "DISK_ID (${DISK_ID}) is not equal to the device id for volume ${volume}. We got ${detected_device_node}. Not deleting ramdisk. Inspect manually"
+    return 2
+  fi
+
+  echo "Unmounting, secure-erasing and ejecting temp ramdisk at ${volume} (dev: ${detected_device_node})"
+
+  diskutil umount "${volume}"
+  diskutil secureErase 2 "${detected_device_node}"
+  diskutil eject "${detected_device_node}"
+}
+
+if [[ "${kernel}" == "Darwin" ]]; then
+  echo "Running on OSX"
+  osx_ramdisk_name="bcktxttmp"
+  decrypted_filepath=/Volumes/${osx_ramdisk_name}/enc-${RANDOM}.md
+  if type srm &> /dev/null; then
+    remover="srm"
+  fi
+
+  osx_create_ramdisk
+else
+  echo "Running on Linux"
+  decrypted_filepath=/dev/shm/enc-${RANDOM}.md
+
+  # /dev/shm is normally a ramdisk, but in case it is not, we should not decrypt to it.
+  if ! df /dev/shm | grep -q tmpfs; then
+    echo "/dev/shm is not a tmpfs (in-memory) filesystem"
+    exit 2
+  fi
+
+  if type shred &> /dev/null; then
+    remover="shred"
+  fi
+fi
+
+echo "Will use ${decrypted_filepath} as tempfile for the decrypted file"
+
+
+# If script exits in a way we can trap, we must cleanup
+# That means that we reach the end of the script, or we crash
+function cleanup {
+  echo "Running cleanup..."
+  if [[ -n "${remover:-}" ]]; then
+    ${remover} ${decrypted_filepath}
+  else
+    echo "No shred-util found, using normal rm"
+  fi
+  rm -f ${decrypted_filepath}
+
+  if [[ "${kernel}" == "Darwin" ]]; then
+    osx_delete_ramdisk
+  fi
+}
+trap cleanup EXIT
+
+
+if [[ -e "${encrypted_filename}" ]]; then
+  decrypt
+else
+  echo "Found no encrypted file (${encrypted_filename}, a new one will be created"
+  read
+fi
+
+editor=${EDITOR:-nano}
+if [[ "${editor}" == "vim" ]]; then
+  echo "Make sure vim is configured to not create swap-files or other temporary files before editing using vim! continue?"
+  read
+fi
+
+${editor} ${decrypted_filepath}
+encrypt
